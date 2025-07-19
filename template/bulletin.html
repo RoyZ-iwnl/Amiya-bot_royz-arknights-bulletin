@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>制作组通讯</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, "Noto Sans", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+            margin: 0;
+            padding: 20px;
+            background-color: #f7f7f7;
+            color: #333;
+        }
+        #app {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: #fff;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+        .banner img {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+        .content-wrapper {
+            padding: 25px;
+        }
+        h1 {
+            font-size: 24px;
+            margin-top: 0;
+            margin-bottom: 10px;
+            color: #111;
+            line-height: 1.5; /* 增加行高，让换行后的标题更好看 */
+        }
+        .publish-time {
+            font-size: 14px;
+            color: #888;
+            margin-bottom: 20px;
+        }
+        .bulletin-content {
+            font-size: 16px;
+            line-height: 1.8;
+            color: #555;
+            word-wrap: break-word;
+        }
+        .bulletin-content img, .bulletin-content video {
+            max-width: 100%;
+            height: auto;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div id="app" v-if="data.title">
+        <!-- 横幅图片，如果 banner_url 为空字符串则不渲染此 div -->
+        <div class="banner" v-if="data.banner_url">
+            <img :src="data.banner_url" alt="Banner">
+        </div>
+        <div class="content-wrapper">
+            <!-- 【关键修改】: 使用 v-html 来渲染带 <br> 的标题 -->
+            <h1 v-html="data.title"></h1>
+            <p class="publish-time">发布时间: {{ data.publish_time }}</p>
+            <div class="bulletin-content" v-html="data.content"></div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/vue@2/dist/vue.min.js"></script>
+    <script>
+        const app = new Vue({
+            el: '#app',
+            data: {
+                data: {}
+            },
+            methods: {
+                init(py_data) {
+                    this.data = py_data;
+                }
+            },
+            mounted() {
+                window.init = this.init;
+            }
+        });
+    </script>
+</body>
+</html>
