@@ -55,19 +55,17 @@
 </head>
 <body>
     <div id="app" v-if="data.title">
-        <!-- 横幅图片，如果 banner_url 为空字符串则不渲染此 div -->
         <div class="banner" v-if="data.banner_url">
             <img :src="data.banner_url" alt="Banner">
         </div>
         <div class="content-wrapper">
-            <!-- 【关键修改】: 使用 v-html 来渲染带 <br> 的标题 -->
             <h1 v-html="data.title"></h1>
             <p class="publish-time">发布时间: {{ data.publish_time }}</p>
             <div class="bulletin-content" v-html="data.content"></div>
         </div>
     </div>
 
-    <script src="https://cdn.jsdelivr.net/npm/vue@2/dist/vue.min.js"></script>
+    <script src="https://cdn.staticfile.net/vue/2.0.0/vue.min.js"></script>
     <script>
         const app = new Vue({
             el: '#app',

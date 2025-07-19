@@ -2,7 +2,8 @@ import os
 import time
 import asyncio
 import base64
-from typing import List, Tuple, Optional
+import aiohttp
+from typing import List, Tuple, Optional, Dict, Any
 
 from core import Message, Chain, log, AmiyaBotPluginInstance, bot as main_bot
 from core.database.group import GroupSetting
@@ -13,6 +14,64 @@ from pydantic import BaseModel, Field
 
 # ----------------- 插件元数据 -----------------
 curr_dir = os.path.dirname(__file__)
+
+# JSON文件路径
+PUSH_GROUPS_FILE = os.path.join(curr_dir, 'push_groups.json')
+
+# ----------------- JSON文件管理 -----------------
+def load_push_groups() -> Dict[str, Any]:
+    """加载推送群组配置"""
+    if os.path.exists(PUSH_GROUPS_FILE):
+        try:
+            with open(PUSH_GROUPS_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception as e:
+            log.error(f"读取推送群组配置失败: {e}")
+            return {}
+    return {}
+
+def save_push_groups(data: Dict[str, Any]) -> bool:
+    """保存推送群组配置"""
+    try:
+        with open(PUSH_GROUPS_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        return True
+    except Exception as e:
+        log.error(f"保存推送群组配置失败: {e}")
+        return False
+
+def add_push_group(channel_id: str, bot_id: str) -> bool:
+    """添加推送群组"""
+    data = load_push_groups()
+    group_key = f"{channel_id}_{bot_id}"
+    data[group_key] = {
+        'channel_id': channel_id,
+        'bot_id': bot_id,
+        'enabled': True,
+        'added_time': int(time.time())
+    }
+    return save_push_groups(data)
+
+def remove_push_group(channel_id: str, bot_id: str) -> bool:
+    """移除推送群组"""
+    data = load_push_groups()
+    group_key = f"{channel_id}_{bot_id}"
+    if group_key in data:
+        data[group_key]['enabled'] = False
+        return save_push_groups(data)
+    return True
+
+def get_enabled_groups() -> List[Dict[str, str]]:
+    """获取所有启用推送的群组"""
+    data = load_push_groups()
+    enabled_groups = []
+    for group_key, group_info in data.items():
+        if group_info.get('enabled', False):
+            enabled_groups.append({
+                'channel_id': group_info['channel_id'],
+                'bot_id': group_info['bot_id']
+            })
+    return enabled_groups
 
 # ----------------- Pydantic 数据模型 -----------------
 class BulletinListItem(BaseModel):
@@ -72,13 +131,30 @@ last_check_timestamp = 0.0
 
 # ----------------- 核心逻辑 -----------------
 async def get_latest_bulletin(force_latest: bool = False, message: Optional[Message] = None) -> Optional[Tuple[Chain, str]]:
+    """
+    获取最新的制作组通讯。
+
+    1.  模拟游戏客户端的请求头 (headers)，包括 User-Agent 和 X-Unity-Version，
+        以防止被服务器拒绝访问。
+    2.  将这个 headers 应用于所有的网络请求，包括公告列表、详情和横幅图片。
+    """
     keywords_to_check: List[str] = bot.get_config('keywords')
     if not keywords_to_check:
         return None
 
+    # 模拟明日方舟客户端的请求头，防止被服务器屏蔽
+    headers = {
+        'User-Agent': 'arknights/40 CFNetwork/1329 Darwin/21.3.0',
+        'X-Unity-Version': '2021.3.39f1',
+        'Accept': '*/*',
+        'Accept-Encoding': 'gzip',
+        'Connection': 'keep-alive'
+    }
+
     try:
         list_api = "https://ak-webview.hypergryph.com/api/game/bulletinList?target=IOS"
-        resp = await http_requests.get(list_api, timeout=10)
+        # 使用新的请求头进行请求
+        resp = await http_requests.get(list_api, timeout=10, headers=headers)
         if not resp or resp.response.status != 200:
             log.error(f"获取官方公告列表失败，状态码: {resp.response.status if resp else '无响应'}")
             return None
@@ -98,7 +174,8 @@ async def get_latest_bulletin(force_latest: bool = False, message: Optional[Mess
 
         try:
             detail_api = f"https://ak-webview.hypergryph.com/api/game/bulletin/{bulletin.cid}"
-            detail_resp = await http_requests.get(detail_api, timeout=10)
+            # 同样使用请求头
+            detail_resp = await http_requests.get(detail_api, timeout=10, headers=headers)
             if not detail_resp or detail_resp.response.status != 200:
                 log.error(f"获取公告 {bulletin.cid} 详情失败")
                 continue
@@ -106,15 +183,22 @@ async def get_latest_bulletin(force_latest: bool = False, message: Optional[Mess
 
             banner_base64_string = ""
             try:
-                banner_resp = await http_requests.get(detail_data.banner_image_url)
-                if banner_resp and banner_resp.status_code == 200:
-                    content_type = banner_resp.headers.get('Content-Type', 'image/png')
-                    encoded_data = base64.b64encode(banner_resp.content).decode('utf-8')
-                    banner_base64_string = f"data:{content_type};base64,{encoded_data}"
-                else:
-                    log.warning(f"下载横幅图片失败: {detail_data.banner_image_url}")
+                # 直接使用 aiohttp 下载图片，以获取原始二进制数据
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(detail_data.banner_image_url, headers=headers, timeout=15) as banner_resp:
+                        # aiohttp 使用 .status 判断状态码
+                        if banner_resp.status == 200:
+                            # 使用 .read() 获取二进制内容
+                            image_bytes = await banner_resp.read()
+                            content_type = banner_resp.headers.get('Content-Type', 'image/png')
+                            
+                            # 对二进制内容进行Base64编码
+                            encoded_data = base64.b64encode(image_bytes).decode('utf-8')
+                            banner_base64_string = f"data:{content_type};base64,{encoded_data}"
+                        else:
+                            log.warning(f"下载横幅图片失败，URL: {detail_data.banner_image_url}, 状态码: {banner_resp.status}")
             except Exception as img_e:
-                log.error(f"转换横幅图片为Base64时出错: {img_e}")
+                log.error(f"下载或转换横幅图片时出错: {img_e}", exc_info=True)
 
             # 将标题中的 \n 和 \\n 替换为空格
             processed_title = detail_data.title.replace('\\n', ' ').replace('\n', ' ')
@@ -138,47 +222,36 @@ async def get_latest_bulletin(force_latest: bool = False, message: Optional[Mess
     
     return None
 
-# ----------------- 推送开关指令  -----------------
+# ----------------- 推送开关指令 -----------------
 @bot.on_message(keywords=['开启制作组通讯推送'], level=5)
 async def enable_push(data: Message):
     if not data.is_admin:
         return Chain(data).text('抱歉博士，只有管理员才能设置制作组通讯推送哦。')
 
-    # 查找当前群组的设置
-    setting, created = GroupSetting.get_or_create(
-        group_id=data.channel_id,
-        function_id=bot.plugin_id,
-        defaults={'bot_id': data.instance.appid, 'status': 1}
-    )
+    # 检查是否已经开启
+    enabled_groups = get_enabled_groups()
+    for group in enabled_groups:
+        if group['channel_id'] == data.channel_id and group['bot_id'] == data.instance.appid:
+            return Chain(data).text('博士，本群已经开启制作组通讯推送了，请勿重复操作。')
 
-    if not created and setting.status == 1:
-        return Chain(data).text('博士，本群已经开启制作组通讯推送了，请勿重复操作。')
-
-    # 如果是新创建的记录，它已经是开启状态了，如果是旧记录，则更新为开启
-    if not created:
-        setting.status = 1
-        setting.bot_id = data.instance.appid # 顺便更新bot_id
-        setting.save()
-
-    return Chain(data).text('指令确认，本群的制作组通讯推送功能已开启！')
+    # 添加到推送列表
+    if add_push_group(data.channel_id, data.instance.appid):
+        log.info(f"群组 {data.channel_id} 开启了制作组通讯推送")
+        return Chain(data).text('指令确认，本群的制作组通讯推送功能已开启！')
+    else:
+        return Chain(data).text('开启推送功能时出现错误，请稍后重试。')
 
 @bot.on_message(keywords=['关闭制作组通讯推送'], level=5)
 async def disable_push(data: Message):
     if not data.is_admin:
-        return Chain.text('抱歉博士，只有管理员才能设置制作组通讯推送哦。')
+        return Chain(data).text('抱歉博士，只有管理员才能设置制作组通讯推送哦。')
 
-    # 直接尝试更新，如果记录不存在，peewee不会报错
-    updated_rows = GroupSetting.update(status=0).where(
-        (GroupSetting.group_id == data.channel_id) &
-        (GroupSetting.function_id == bot.plugin_id)
-    ).execute()
-
-    if updated_rows > 0:
+    # 从推送列表中移除
+    if remove_push_group(data.channel_id, data.instance.appid):
+        log.info(f"群组 {data.channel_id} 关闭了制作组通讯推送")
         return Chain(data).text('指令确认，本群已关闭制作组通讯推送功能。')
     else:
-        # 这种情况通常是之前就没开启过
-        return Chain(data).text('博士，本群尚未开启过制作组通讯推送功能。')
-
+        return Chain(data).text('关闭推送功能时出现错误，请稍后重试。')
 
 # ----------------- 手动触发指令 -----------------
 @bot.on_message(keywords=['测试通讯推送'], level=5)
@@ -205,24 +278,21 @@ async def execute_bulletin_push():
     if BulletinRecord.get_or_none(cid=bulletin_cid):
         return
 
-    # 查找所有启用了此功能的群组
-    target_channels = GroupSetting.select().where(
-        (GroupSetting.function_id == bot.plugin_id) &
-        (GroupSetting.status == 1)
-    )
+    # 获取所有启用了推送的群组
+    target_groups = get_enabled_groups()
 
-    if not target_channels:
+    if not target_groups:
         log.info("发现新通讯，但没有找到需要推送的群组。")
         # 即使没有群推送，也应记录下来防止下次重复检查
         BulletinRecord.create(cid=bulletin_cid, record_time=int(time.time()))
         return
 
     push_tasks = []
-    for item in target_channels:
-        instance = main_bot[item.bot_id]
+    for group in target_groups:
+        instance = main_bot[group['bot_id']]
         if instance:
             task = asyncio.create_task(
-                instance.send_message(image_chain, channel_id=item.group_id)
+                instance.send_message(image_chain, channel_id=group['channel_id'])
             )
             push_tasks.append(task)
     
