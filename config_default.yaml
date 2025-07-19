@@ -1,7 +1,7 @@
 # 是否开启推送功能
 enablePush: true
 # 检查新公告的间隔时间（秒），建议不低于300秒
-checkInterval: 300
+checkInterval: 120
 # 需要推送的公告标题关键词列表
 keywords:
   - "制作组通讯"

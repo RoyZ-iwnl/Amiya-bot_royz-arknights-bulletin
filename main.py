@@ -57,7 +57,7 @@ class ArknightsBulletinPluginInstance(AmiyaBotPluginInstance):
 
 bot = ArknightsBulletinPluginInstance(
     name='制作组通讯推送',
-    version='1.0.0',
+    version='1.1.0',
     plugin_id='royz-arknights-bulletin',
     plugin_type="",
     description='定时或手动获取明日方舟制作组通讯',
@@ -66,6 +66,9 @@ bot = ArknightsBulletinPluginInstance(
     global_config_schema=f'{curr_dir}/config_schema.json',
     global_config_default=f'{curr_dir}/config_default.yaml',
 )
+
+# ----------------- 状态变量 -----------------
+last_check_timestamp = 0.0
 
 # ----------------- 核心逻辑 -----------------
 async def get_latest_bulletin(force_latest: bool = False, message: Optional[Message] = None) -> Optional[Tuple[Chain, str]]:
@@ -101,36 +104,29 @@ async def get_latest_bulletin(force_latest: bool = False, message: Optional[Mess
                 continue
             detail_data = ArkBulletinResponse.parse_obj(detail_resp.json).data
 
-            
-            # 下载横幅图片并转换为 Base64
             banner_base64_string = ""
             try:
                 banner_resp = await http_requests.get(detail_data.banner_image_url)
                 if banner_resp and banner_resp.status_code == 200:
-                    # 获取正确的图片 MIME 类型，如 image/png, image/jpeg
                     content_type = banner_resp.headers.get('Content-Type', 'image/png')
-                    # 对图片二进制数据进行 Base64 编码
                     encoded_data = base64.b64encode(banner_resp.content).decode('utf-8')
-                    # 构造成 Data URI
                     banner_base64_string = f"data:{content_type};base64,{encoded_data}"
                 else:
                     log.warning(f"下载横幅图片失败: {detail_data.banner_image_url}")
             except Exception as img_e:
                 log.error(f"转换横幅图片为Base64时出错: {img_e}")
 
-            # 2. 处理标题中的换行符
-            processed_title = detail_data.title.replace('\\n', '<br>').replace('\n', '<br>')
+            # 将标题中的 \n 和 \\n 替换为空格
+            processed_title = detail_data.title.replace('\\n', ' ').replace('\n', ' ')
 
-            # 3. 准备最终的数据字典
             template_path = f'{curr_dir}/template/bulletin.html'
             render_data = {
                 'title': processed_title,
-                'banner_url': banner_base64_string,  # 使用 Base64 字符串
+                'banner_url': banner_base64_string,
                 'content': detail_data.content,
                 'publish_time': time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(detail_data.updated_at))
             }
             
-            # 4. 创建消息链并渲染
             chain_builder = Chain(message) if message else Chain()
             image_chain = chain_builder.html(template_path, render_data, width=800, height=1)
             
@@ -141,6 +137,48 @@ async def get_latest_bulletin(force_latest: bool = False, message: Optional[Mess
             continue
     
     return None
+
+# ----------------- 推送开关指令  -----------------
+@bot.on_message(keywords=['开启制作组通讯推送'], level=5)
+async def enable_push(data: Message):
+    if not data.is_admin:
+        return Chain(data).text('抱歉博士，只有管理员才能设置制作组通讯推送哦。')
+
+    # 查找当前群组的设置
+    setting, created = GroupSetting.get_or_create(
+        group_id=data.channel_id,
+        function_id=bot.plugin_id,
+        defaults={'bot_id': data.instance.appid, 'status': 1}
+    )
+
+    if not created and setting.status == 1:
+        return Chain(data).text('博士，本群已经开启制作组通讯推送了，请勿重复操作。')
+
+    # 如果是新创建的记录，它已经是开启状态了，如果是旧记录，则更新为开启
+    if not created:
+        setting.status = 1
+        setting.bot_id = data.instance.appid # 顺便更新bot_id
+        setting.save()
+
+    return Chain(data).text('指令确认，本群的制作组通讯推送功能已开启！')
+
+@bot.on_message(keywords=['关闭制作组通讯推送'], level=5)
+async def disable_push(data: Message):
+    if not data.is_admin:
+        return Chain.text('抱歉博士，只有管理员才能设置制作组通讯推送哦。')
+
+    # 直接尝试更新，如果记录不存在，peewee不会报错
+    updated_rows = GroupSetting.update(status=0).where(
+        (GroupSetting.group_id == data.channel_id) &
+        (GroupSetting.function_id == bot.plugin_id)
+    ).execute()
+
+    if updated_rows > 0:
+        return Chain(data).text('指令确认，本群已关闭制作组通讯推送功能。')
+    else:
+        # 这种情况通常是之前就没开启过
+        return Chain(data).text('博士，本群尚未开启过制作组通讯推送功能。')
+
 
 # ----------------- 手动触发指令 -----------------
 @bot.on_message(keywords=['测试通讯推送'], level=5)
@@ -155,13 +193,8 @@ async def manual_check(data: Message):
     else:
         await data.send(Chain(data).text('博士，目前没有找到符合条件的最新制作组通讯。'))
 
-
-# ----------------- 定时任务 -----------------
-@bot.timed_task(each=bot.get_config('checkInterval', 300))
-async def timed_check_bulletin(_):
-    if not bot.get_config('enablePush'):
-        return
-
+# ----------------- 定时任务核心执行逻辑 -----------------
+async def execute_bulletin_push():
     result = await get_latest_bulletin(force_latest=False, message=None)
     
     if not result:
@@ -172,13 +205,16 @@ async def timed_check_bulletin(_):
     if BulletinRecord.get_or_none(cid=bulletin_cid):
         return
 
+    # 查找所有启用了此功能的群组
     target_channels = GroupSetting.select().where(
         (GroupSetting.function_id == bot.plugin_id) &
         (GroupSetting.status == 1)
     )
 
     if not target_channels:
-        log.info("没有找到需要推送的群组。")
+        log.info("发现新通讯，但没有找到需要推送的群组。")
+        # 即使没有群推送，也应记录下来防止下次重复检查
+        BulletinRecord.create(cid=bulletin_cid, record_time=int(time.time()))
         return
 
     push_tasks = []
@@ -195,3 +231,23 @@ async def timed_check_bulletin(_):
         log.info(f"已向 {len(push_tasks)} 个群组推送公告 {bulletin_cid}")
 
     BulletinRecord.create(cid=bulletin_cid, record_time=int(time.time()))
+
+# ----------------- 定时任务调度器 -----------------
+@bot.timed_task(each=60)
+async def timed_check_scheduler(_):
+    global last_check_timestamp
+
+    if not bot.get_config('enablePush'):
+        return
+
+    try:
+        interval_seconds = int(bot.get_config('checkInterval', 120))
+    except (ValueError, TypeError):
+        log.warning(f"配置中的 'checkInterval' 值无效，将使用默认值120秒。")
+        interval_seconds = 120
+    
+    current_time = time.time()
+    if current_time - last_check_timestamp >= interval_seconds:
+        log.info(f"到达预定检查时间（间隔: {interval_seconds} 秒），准备执行通讯检查。")
+        last_check_timestamp = current_time
+        await execute_bulletin_push()
