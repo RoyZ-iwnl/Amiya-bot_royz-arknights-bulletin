@@ -1,0 +1,25 @@
+{
+    "type": "object",
+    "properties": {
+      "enablePush": {
+        "type": "boolean",
+        "title": "开启推送",
+        "description": "是否开启“制作组通讯”自动推送功能。"
+      },
+      "checkInterval": {
+        "type": "integer",
+        "title": "检查间隔（秒）",
+        "description": "定时检查新公告的间隔时间，建议不要设置得太短，以免给鹰角服务器造成压力。",
+        "minimum": 60
+      },
+      "keywords": {
+        "type": "array",
+        "title": "标题关键词",
+        "description": "当公告标题包含列表中的任意一个关键词时，触发推送。",
+        "items": {
+          "type": "string"
+        }
+      }
+    }
+  }
+  
