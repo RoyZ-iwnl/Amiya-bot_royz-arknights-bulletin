@@ -3,6 +3,7 @@ import time
 import asyncio
 import base64
 import aiohttp
+import json
 from typing import List, Tuple, Optional, Dict, Any
 
 from core import Message, Chain, log, AmiyaBotPluginInstance, bot as main_bot
@@ -116,7 +117,7 @@ class ArknightsBulletinPluginInstance(AmiyaBotPluginInstance):
 
 bot = ArknightsBulletinPluginInstance(
     name='制作组通讯推送',
-    version='1.1.0',
+    version='1.1.1',
     plugin_id='royz-arknights-bulletin',
     plugin_type="",
     description='定时或手动获取明日方舟制作组通讯',
